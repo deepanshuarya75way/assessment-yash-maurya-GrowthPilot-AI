@@ -98,7 +98,6 @@ export class CampaignsService {
     }
 
 
-    //Mark the campign 
     await this.prisma.campaign.update({
       where: {id},
       data : {status: 'dispatching'}
@@ -184,7 +183,7 @@ export class CampaignsService {
       }
     } 
 
-
+ 
     let finalStatus = 'sent';
     if(failureCount > 0) {
       finalStatus = successCount == 0? 'failed' : 'partial';
