@@ -97,23 +97,37 @@ export class CampaignsService {
       throw new BadRequestException('Target segment has 0 matching customers. Cannot send campaign.');
     }
 
-    // Set campaign to sent
-    const updatedCampaign = await this.prisma.campaign.update({
-      where: { id },
-      data: {
-        status: 'sent',
-        sentAt: new Date(),
-      },
+
+    //Mark the campign 
+    await this.prisma.campaign.update({
+      where: {id},
+      data : {status: 'dispatching'}
     });
 
-    // Create communications in database and trigger async outreach
-    for (const customer of targetCustomers) {
-      const messageRendered = campaign.messageTemplate
+    const existingSucessess = await this.prisma.communication.findMany({
+      where: {
+        campaignId : id,
+        status : 'sent'
+      },
+      select: {customerId : true}
+    });
+
+    const successfullCustomerIds = new Set(existingSucessess.map(c => c.customerId));
+    let successCount = 0;
+    let failureCount = 0;
+
+    for(const customer of targetCustomers) {
+      if(successfullCustomerIds.has(customer.id)) {
+        successCount++;
+        continue;
+      }
+
+       const messageRendered = campaign.messageTemplate
         .replace(/\{\{name\}\}/g, customer.name)
         .replace(/\{\{email\}\}/g, customer.email);
 
-      // Create communication record
-      const communication = await this.prisma.communication.upsert({
+
+        const communication = await this.prisma.communication.upsert({
         where: {
           campaignId_customerId: {
             campaignId: id,
@@ -139,24 +153,56 @@ export class CampaignsService {
         },
       });
 
-      // Call channel client (external service)
-      await this.channelClientService.send({
-        communicationId: communication.id,
-        campaignId: id,
-        customer: {
-          id: customer.id,
-          name: customer.name,
-          phone: customer.phone,
-          email: customer.email,
-        },
-        channel: campaign.channel,
-        message: messageRendered,
-      });
+      try {
+        await this.channelClientService.send({
+          communicationId: communication.id,
+          campaignId : id,
+          customer: {
+            id: customer.id,
+            name: customer.name,
+            phone: customer.phone,
+            email: customer.email,
+          },
+          channel: campaign.channel,
+          message: messageRendered,
+        });
+        await this.primsa.communication.update({
+          where: {id: communication.id},
+          data: {status: 'sent', sentAt: new Date()},
+
+        });
+        successCount++;
+      } catch(error) {
+        await this.primsa.communication.update({
+          where : { id : communication.id},
+          data: {
+            status: 'failed',
+            failureReason: error instanceof Error ? error.message : 'Unknown Dispatch Error'
+          },
+        });
+        failureCount++;
+      }
+    } 
+
+
+    let finalStatus = 'sent';
+    if(failureCount > 0) {
+      finalStatus = successCount == 0? 'failed' : 'partial';
     }
+
+    const updatedCampaign = await this.primsa.campaign.update({
+      where: {id},
+      data : {
+        status: finalStatus,
+        ...(finalStatus === 'sent' ? {sentAt: new Date()} : {});
+      },
+    });
 
     return {
       campaign: updatedCampaign,
       audienceSize: targetCustomers.length,
+      successCount, 
+      failureCount
     };
   }
 }
