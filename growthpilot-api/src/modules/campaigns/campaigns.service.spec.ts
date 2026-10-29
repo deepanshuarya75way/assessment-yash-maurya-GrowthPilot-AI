@@ -5,7 +5,7 @@ import { PrismaService } from '../../db/prisma.service';
 import { SegmentsService } from '../segments/segments.service';
 import { ChannelClientService } from '../channel-client/channel-client.service';
 import { buildCampaignDto } from '../../../test/helpers/factories';
-import { describe, it, mock } from 'node:test';
+import { describe, it, beforeEach, jest, expect } from '@jest/globals';
 import expectCookies, { not } from 'supertest/lib/cookies';
 
 describe('CampaignsService', () => {
@@ -40,28 +40,30 @@ describe('CampaignsService', () => {
 
   const mockPrisma = {
     campaign: {
-      create: jest.fn(),
-      findMany: jest.fn(),
-      findUnique: jest.fn(),
-      count: jest.fn(),
-      update: jest.fn(),
-      updateMany: jest.fn(),
+      create: jest.fn<any>(),
+      findMany: jest.fn<any>(),
+      findUnique: jest.fn<any>(),
+      count: jest.fn<any>(),
+      update: jest.fn<any>(),
+      updateMany: jest.fn<any>(),
     },
     communication: {
-      upsert: jest.fn(),
-      findMany: jest.fn(),
-      findUnique: jest.fn(),
-      updateMany: jest.fn(),
+      upsert: jest.fn<any>(),
+      findMany: jest.fn<any>(),
+      findUnique: jest.fn<any>(),
+      updateMany: jest.fn<any>(),
+      create: jest.fn<any>(),
+      update: jest.fn<any>(),
     },
   };
 
   const mockSegmentsService = {
-    findOne: jest.fn(),
-    preview: jest.fn(),
+    findOne: jest.fn<any>(),
+    preview: jest.fn<any>(),
   };
 
   const mockChannelClient = {
-    send: jest.fn(),
+    send: jest.fn<any>(),
   };
 
   beforeEach(async () => {
@@ -247,7 +249,7 @@ describe('CampaignsService', () => {
         }),
       );
 
-      mockPrisma.communication.upsert.mockImplementation(
+      mockPrisma.communication.create.mockImplementation(
         async ({where, data} :any) => ({
           id: where.id,
           ...data,
@@ -286,13 +288,13 @@ describe('CampaignsService', () => {
         },
       });
 
-      expect(mockPrisma.communication.upsert).toHaveBeenCalledTimes(2);
+      expect(mockPrisma.communication.create).toHaveBeenCalledTimes(2);
 
 
       expect(channelClient.send).toHaveBeenCalledTimes(2);
 
       expect(result.audienceSize).toBe(2);
-      expect(result.successfullCount).toBe(2);
+      expect(result.sentCount).toBe(2);
       expect(result.failedCount).toBe(0);
 
       expect(mockPrisma.campaign.update).toHaveBeenCalledWith(
@@ -327,7 +329,12 @@ describe('CampaignsService', () => {
 
         expect(mockPrisma.campaign.updateMany).not.toHaveBeenCalled();
 
-        it('reject sending to an empty sending', async () => {
+        
+
+        
+    });
+
+    it('reject sending to an empty sending', async () => {
           mockPrisma.campaign.findUnique.mockResolvedValue({
             ...mockCampaign,
             status: 'apprpved',
@@ -341,14 +348,14 @@ describe('CampaignsService', () => {
 
           await expect(service.send('camp-001'),).rejects.toThrow(BadRequestException);
 
-          expect(mockPrisma.communication.upsert).not.toHaveBeenCalled();
+          expect(mockPrisma.communication.create).not.toHaveBeenCalled();
 
           expect(mockPrisma.campaign.updateMany).not.toHaveBeenCalled();
 
           expect(channelClient.send).not.toHaveBeenCalled();
-        });
+    });
 
-        it('marks the campign partial when one recipient fails', async () => {
+    it('marks the campign partial when one recipient fails', async () => {
           const approvedCampaign = {
             ...mockCampaign,
             status: 'approved',
@@ -389,9 +396,11 @@ describe('CampaignsService', () => {
               }),
             }),
           );
-        });
+    });
 
-        it('does not resend successfull recipients when retrying', async () => {
+
+
+    it('does not resend successfull recipients when retrying', async () => {
           const partialCampaign = {
             ...mockCampaign,
             status: 'partial',
@@ -432,7 +441,7 @@ describe('CampaignsService', () => {
             }),
           );
           expect(result.audienceSize).toBe(2);
-          expect(result.successfullCount).toBe(2);
+          expect(result.sentCount).toBe(2);
           expect(result.failedCount).toBe(0);
           expect(result.campaign.status).toBe('sent');
 
@@ -460,7 +469,8 @@ describe('CampaignsService', () => {
 
           expect(channelClient.send).not.toHaveBeenCalled();
         });
-    });
+
+        
   })
 
 });
