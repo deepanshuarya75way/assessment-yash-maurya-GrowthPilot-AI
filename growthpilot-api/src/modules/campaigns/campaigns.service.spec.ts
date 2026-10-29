@@ -395,11 +395,11 @@ describe('CampaignsService', () => {
             expect.objectContaining({
               where: {
                 id: 'comm-c2',
-                status: 'sending',
+                status: 'pending',
               },
               data: expect.objectContaining({
                 status: 'failed',
-                failureReason: 'Cannel service unavaliable',
+                failureReason: 'channel service unavaliable',
               }),
             }),
           );
@@ -431,6 +431,32 @@ describe('CampaignsService', () => {
             },
           ] as any);
 
+          mockPrisma.communication.findUnique.mockImplementation(
+            async({where} : any) => {
+              const customerId = where.campaignId_customerId.customerId;
+
+              if(customerId === 'c1'){
+                return {
+                  id: 'comm-c1',
+                  customerId: 'c1',
+                  status : 'delivered',
+                  messageRendered: 'Hello Alice, check our latest offers!',
+                } as any;
+              }
+              if(customerId === 'c2'){
+                return {
+                  id: 'comm-c2',
+                  customerId: 'c2',
+                  status : 'failed',
+                  messageRendered: 'Hello Bob, check our latest offers!',
+                } as any;
+              }
+
+              return null;
+
+            }
+          )
+
           mockPrisma.campaign.update.mockResolvedValue({
             ...partialCampaign,
             status: 'sent',
@@ -448,7 +474,8 @@ describe('CampaignsService', () => {
             }),
           );
           expect(result.audienceSize).toBe(2);
-          expect(result.sentCount).toBe(2);
+          expect(result.sentCount).toBe(1);
+          expect(result.skippedCount).toBe(1);
           expect(result.failedCount).toBe(0);
           expect(result.campaign.status).toBe('sent');
 
