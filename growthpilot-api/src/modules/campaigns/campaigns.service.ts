@@ -83,80 +83,220 @@ export class CampaignsService {
 
   async send(id: string) {
     const campaign = await this.findOne(id);
-    if (campaign.status !== 'approved') {
+
+    const isRetry = 
+      campaign.status === 'partial' ||
+      campaign.status === 'failed';
+    
+    if(campaign.status !== 'approved' && !isRetry) {
+      throw new BadRequestException(`Capgaign status is ${campaign.status}. 
+        Campaigns must be approved before sending.`);
+    }
+
+    let targetCustomers;
+    if(isRetry) {
+      const prevousCommunications = await this.prisma.communication.findMany({
+        where: {campaignId: id},
+        include: {customer: true},
+      });
+
+      if(prevousCommunications.length > 0) {
+        targetCustomers = prevousCommunications.map((communcation) => communcation.customer,);
+      }else {
+        const preview = await this.segmentsService.preview(
+          campaign.segmentId,
+        );
+        targetCustomers = preview.customers;
+      }
+    }else {
+      const preview = await this.segmentsService.preview(campaign.segmentId,);
+      targetCustomers = preview.customers;
+    }
+
+    if(targetCustomers.length === 0) {
       throw new BadRequestException(
-        `Campaign status is ${campaign.status}. Campaigns must be approved before sending.`,
+        `Target segment has 0 matching customers. Cannot send campaign`,
       );
     }
 
-    // Evaluate segment matching customers
-    const previewResult = await this.segmentsService.preview(campaign.segmentId);
-    const targetCustomers = previewResult.customers;
+    const claimed = await this.prisma.campaign.updateMany({
+      where: {
+        id, 
+        status: campaign.status,
+      },
+      data: {
+        status: 'sending',
+        sentAt: null,
+      },
 
-    if (targetCustomers.length === 0) {
-      throw new BadRequestException('Target segment has 0 matching customers. Cannot send campaign.');
+    });
+
+
+    if(claimed.count === 0) {
+      throw new BadRequestException(
+        `Campaign is already begin send or its status has changed. `,
+      );
     }
 
-    // Set campaign to sent
+    const successfulStatuses = [
+      'send',
+      'delivered',
+      'opened',
+      'read',
+      'clicked',
+      'purchased',
+    ];
+
+    const outcomes: Array<'sent' | 'failed' | 'skipped' > = [];
+
+    const batchSize = 10;
+
+    for(let i = 0; i < targetCustomers.length; i+= batchSize) {
+      const batch  = targetCustomers.slice(i, i + batchSize);
+      const results = await Promise.allSettled(
+        batch.map(async (customer) => {
+          let communicationId: string | undefined;
+
+          try {
+            const messageRendered = campaign.messageTemplate
+            .replace(/\{\{name\}\}/g, customer.name)
+            .replace(/\{\{email\}\}/g, customer.email);
+
+
+            const existing = await this.prisma.communication.findUnique({
+              where : {
+                campaignId_customerId: {
+                  campaignId: id,
+                  customerId: customer.id,
+                },
+              },
+            });
+
+            if(existing && successfulStatuses.includes(existing.status)){
+              return 'skipped' as const;
+            }
+
+            let communcation;
+
+            if(existing) {
+              communicationId = existing.id;
+
+              communcation = await this.prisma.communication.update({
+                where: {id: existing.id},
+                data: {
+                  status: 'pending',
+                  messageRendered,
+                  failureReason: null,
+                  sentAt: null,
+                  deliveredAt: null,
+                  openedAt: null,
+                  readAt: null,
+                  clickedAt: null,
+                  purchasedAt: null,
+                },
+              });
+            }else {
+              communcation = await this.prisma.communication.create({
+                data: {
+                  campaignId: id,
+                  customerId: customer.id,
+                  channel: campaign.channel,
+                  messageRendered,
+                  status: 'pending',
+                },
+              });
+
+              communicationId = communcation.id;
+            }
+
+            await this.channelClientService.send({
+              communicationId: communcation.id,
+              campaignId: id,
+              customer: {
+                id: customer.id,
+                name: customer.name,
+                phone: customer.phone,
+                email: customer.email,
+              },
+              channel: campaign.channel,
+              message: messageRendered,
+            });
+
+            await this.prisma.communication.updateMany({
+              where: {
+                id: communcation.id,
+                status: 'pending',
+              },
+              data: {
+                status: 'sent',
+                sentAt: new Date(),
+                failureReason: null,
+              },
+            });
+
+            return 'sent' as const;
+          }catch(error) {
+            const reason = error instanceof Error ? error.message : String(error);
+
+            if(communicationId) {
+              await this.prisma.communication.updateMany({
+                where: {
+                  id: communicationId,
+                  status: 'pending',
+                },
+                data : {
+                  status: 'failed',
+                  failureReason: reason,
+                },
+              })
+              .catch(() => undefined);
+            }
+
+            return 'failed' as const;
+          }
+        }),
+      );
+
+      for(const result of  results) {
+        if(result.status === 'fulfilled') {
+          outcomes.push(result.value);
+        }else {
+          outcomes.push('failed');
+        }
+      }
+    }
+
+
+    const successfullCount = outcomes.filter(
+      (result) => result === 'sent' || result === 'skipped',
+    ).length;
+
+    const failedCount = outcomes.filter (
+      (result) => result === 'failed',
+    ).length;
+
+    const finalStatus = failedCount === 0 ? 'sent' : successfullCount > 0 ? 'partial' : 'failed';
+
+
     const updatedCampaign = await this.prisma.campaign.update({
-      where: { id },
-      data: {
-        status: 'sent',
-        sentAt: new Date(),
+      where: {id},
+      data : {
+        status : finalStatus,
+        sentAt: finalStatus === 'sent' ? new Date() : null,
       },
     });
 
-    // Create communications in database and trigger async outreach
-    for (const customer of targetCustomers) {
-      const messageRendered = campaign.messageTemplate
-        .replace(/\{\{name\}\}/g, customer.name)
-        .replace(/\{\{email\}\}/g, customer.email);
-
-      // Create communication record
-      const communication = await this.prisma.communication.upsert({
-        where: {
-          campaignId_customerId: {
-            campaignId: id,
-            customerId: customer.id,
-          },
-        },
-        create: {
-          campaignId: id,
-          customerId: customer.id,
-          channel: campaign.channel,
-          messageRendered,
-          status: 'pending',
-        },
-        update: {
-          status: 'pending',
-          messageRendered,
-          failureReason: null,
-          sentAt: null,
-          deliveredAt: null,
-          openedAt: null,
-          clickedAt: null,
-          purchasedAt: null,
-        },
-      });
-
-      // Call channel client (external service)
-      await this.channelClientService.send({
-        communicationId: communication.id,
-        campaignId: id,
-        customer: {
-          id: customer.id,
-          name: customer.name,
-          phone: customer.phone,
-          email: customer.email,
-        },
-        channel: campaign.channel,
-        message: messageRendered,
-      });
-    }
 
     return {
-      campaign: updatedCampaign,
+      campaign : updatedCampaign,
       audienceSize: targetCustomers.length,
+      sentCount: outcomes.filter(
+        (result) => result === 'sent',
+       ).length,
+       skippedCount: outcomes.filter(
+        (result) => result === 'skipped',
+       ).length,
+       failedCount,
     };
   }
 }
