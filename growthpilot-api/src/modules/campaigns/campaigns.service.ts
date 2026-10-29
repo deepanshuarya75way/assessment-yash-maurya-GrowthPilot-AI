@@ -100,7 +100,7 @@ export class CampaignsService {
         include: {customer: true},
       });
 
-      if(prevousCommunications.length > 0) {
+      if(prevousCommunications?.length > 0) {
         targetCustomers = prevousCommunications.map((communcation) => communcation.customer,);
       }else {
         const preview = await this.segmentsService.preview(

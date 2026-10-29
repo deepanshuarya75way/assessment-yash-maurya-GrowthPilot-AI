@@ -239,18 +239,25 @@ describe('CampaignsService', () => {
       });
 
       mockPrisma.campaign.findUnique.mockResolvedValue(null);
-
-      mockPrisma.communication.upsert.mockImplementation(
-        async({create}: any) => ({
-          id: `com-${create.customerId}`,
-          customerId: create.customerId,
-          status: 'pending',
-          messagerRendered: create.messageRendered,
-        }),
-      );
+      mockPrisma.communication.findMany.mockResolvedValue([]);
+      
+      // mockPrisma.communication.upsert.mockImplementation(
+      //   async({create}: any) => ({
+      //     id: `com-${create.customerId}`,
+      //     customerId: create.customerId,
+      //     status: 'pending',
+      //     messagerRendered: create.messageRendered,
+      //   }),
+      // );
 
       mockPrisma.communication.create.mockImplementation(
-        async ({where, data} :any) => ({
+        async ({ data} :any) => ({
+          id: `comm-${data.customerId}`,
+          ...data,
+        }),
+      );
+      mockPrisma.communication.update.mockImplementation(
+        async ({ where, data} :any) => ({
           id: where.id,
           ...data,
         }),
@@ -454,21 +461,21 @@ describe('CampaignsService', () => {
           );
         });
 
-        it('reject a concurrent dispatch when the campign cannot be claimed', async () => {
-          mockPrisma.campaign.findUnique.mockResolvedValue({
-            ...mockCampaign,
-            status: 'approved',
-          }as any);
+    it('reject a concurrent dispatch when the campign cannot be claimed', async () => {
+      mockPrisma.campaign.findUnique.mockResolvedValue({
+        ...mockCampaign,
+        status: 'approved',
+      }as any);
 
-          mockPrisma.campaign.updateMany.mockResolvedValue({
-            count: 0,
-          });
-          await expect(
-            service.send('camp-001'),
-          ).rejects.toThrow(BadRequestException);
+      mockPrisma.campaign.updateMany.mockResolvedValue({
+        count: 0,
+      });
+      await expect(
+        service.send('camp-001'),
+      ).rejects.toThrow(BadRequestException);
 
-          expect(channelClient.send).not.toHaveBeenCalled();
-        });
+      expect(channelClient.send).not.toHaveBeenCalled();
+    });
 
         
   })
